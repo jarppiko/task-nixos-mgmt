@@ -1,0 +1,715 @@
+# https://taskfile.dev/docs
+
+version: '3'
+
+silent: true
+
+vars:
+  HOST_ALIASES:
+    # incorrect IP on purpose, a workaround for lack of empty dict support
+    map:
+      placeholder_alias_ignore: "1.1.1.1.1"
+  HOSTNAME:
+    sh: hostname
+  REBUILD_TIME: ".rebuild_time"
+  CHANNELS_UPDATED: ".task/channels-updated"
+  SPINPIPE: ".task/spinpipe.sh"
+  TIMEOUT: 5
+
+includes:
+  cfg: ./hosts.yml
+
+set: [ pipefail , errexit, nounset ]
+shell: bash
+
+
+tasks:
+
+  ensure-spinpipe:
+    internal: true
+    desc: 'ensure local spinner passthrough script exists'
+    status:
+      - test -x "{{.SPINPIPE}}"
+    cmds:
+      - mkdir -p "$(dirname "{{.SPINPIPE}}")"
+      - |
+          cat > "{{.SPINPIPE}}" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          style="${1:-clock}"
+
+          # Disable spinner completely if SPINNER=0
+          # Behaves as a transparent pipe
+          if [[ "${SPINNER:-1}" = "0" ]]; then
+            cat
+            exit 0
+          fi
+
+          case "$style" in
+            clock)
+              frames=("🕛" "🕐" "🕑" "🕒" "🕓" "🕔" "🕕" "🕖" "🕗" "🕘" "🕙" "🕚")
+              ;;
+            line)
+              frames=("\\|" "/" "-" "\\\\")
+              ;;
+            dots)
+              frames=("⠁" "⠂" "⠄" "⡀" "⢀" "⠠" "⠐" "⠈")
+              ;;
+            *)
+              frames=("\\|" "/" "-" "\\\\")
+              ;;
+          esac
+
+          i=0
+
+          # Ensure spinner line is cleared on exit / Ctrl-C
+          trap 'printf "\r" >&2' EXIT INT TERM
+
+          while IFS= read -r line; do
+            printf "\r%s %s" "${frames[i % ${#frames[@]}]}" "$line" >&2
+            i=$((i + 1))
+            printf "%s\n" "$line"
+          done
+          EOF
+      - chmod +x "{{.SPINPIPE}}"
+
+  hosts:
+    desc: 'print configured HOSTS in hosts.yml'
+    cmds:
+      - echo "{{.HOSTS}}"
+
+#
+#    eval
+#
+
+  eval:
+    desc: 'check host configuration.nix syntax (default: "all" for all hosts)'
+    deps:
+      - task: ensure-spinpipe
+    vars:
+      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+    cmds:
+      - for:
+          var: TARGETS
+          as: HOST
+        task: eval-host:{{.HOST}}
+
+
+  eval-host:*:
+    vars:
+      HOST: '{{index .MATCH 0}}'
+      CFG: 'hosts/{{.HOST}}/configuration.nix'
+    preconditions:
+      - sh: test -f "./{{.CFG}}"
+        msg: 'Error: Configuration {{.CFG}} not found'
+    cmds:
+      - task: print_check
+        vars:
+          TITLE: "Check configuration syntax for {{.HOST}}"
+      - |
+          set -euo pipefail
+          nix-instantiate --eval -E "
+            let
+              lib = (import <nixpkgs> {}).lib;
+              cfg = import {{.CFG}};
+            in
+              builtins.typeOf cfg" > /dev/null &&
+                printf "\u2705 OK: nix-instantiate --eval {{.HOST}}\n" ||
+                printf "\u274C Error: nix-instantiate --eval {{.HOST}}\n"
+
+#
+#  check | chk
+#
+
+  check:
+    desc: 'check host configuration.nix (default: "all" for all hosts)'
+    aliases: [chk]
+    deps:
+      - task: ensure-spinpipe
+    vars:
+      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+    cmds:
+      - for:
+          var: TARGETS
+          as: HOST
+        task: rebuild-dry-build-host:{{.HOST}}
+
+
+  rebuild-dry-build-host:*:
+    vars:
+      HOST: '{{index .MATCH 0}}'
+      CFG: 'hosts/{{.HOST}}/configuration.nix'
+    preconditions:
+      - sh: test -f "./{{.CFG}}"
+        msg: 'Error: Configuration {{.CFG}} not found'
+    deps:
+      - task: eval-host:{{.HOST}}
+    cmds:
+      - task: print_deploy
+        vars:
+          TITLE: "nixos-rebuild dry-build {{.HOST}}"
+      - |
+          set -euo pipefail
+          if output=$(
+              set -o pipefail
+              nixos-rebuild dry-build -I "nixos-config={{.CFG}}" --show-trace |& {{.SPINPIPE}} clock
+            ); then
+            printf "\n\u2705 OK: {{.HOST}}\n"
+          else
+            rc=$?
+            printf '%s\n' "$output" >&2
+            printf "\u274C Error: {{.HOST}}\n"
+            exit $rc
+          fi
+
+#
+#  nixos-rebuild COMMAND
+#
+
+  test:
+    desc: 'nixos-rebuild test HOST (default: "all" for all hosts)'
+    deps:
+      - task: ensure-spinpipe
+    vars:
+      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+    cmds:
+      - for:
+          var: TARGETS
+          as: HOST
+        task: rebuild-cmd-host:test:{{.HOST}}
+
+
+  boot:
+    desc: 'nixos-rebuild boot HOST (default: "all" for all hosts)'
+    deps:
+      - task: ensure-spinpipe
+    vars:
+      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+    cmds:
+      - for:
+          var: TARGETS
+          as: HOST
+        task: rebuild-cmd-host:boot:{{.HOST}}
+
+
+  switch:
+    desc: 'nixos-rebuild switch HOST (default: "all" for all hosts)'
+    aliases: [build, deploy]
+    deps:
+      - task: ensure-spinpipe
+    vars:
+      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+    cmds:
+      - for:
+          var: TARGETS
+          as: HOST
+        task: rebuild-cmd-host:switch:{{.HOST}}
+
+
+  rebuild-cmd-host:*:*:
+    vars:
+      COMMAND: '{{index .MATCH 0}}'
+      HOST: '{{index .MATCH 1}}'
+      CFG: 'hosts/{{.HOST}}/configuration.nix'
+      REBUILD_TASK:
+        sh: |
+              set -euo pipefail
+              if [ "{{.HOST}}" = "{{.HOSTNAME}}" ]; then
+                echo "rebuild-cmd-local"
+              else
+                echo "rebuild-cmd-remote"
+              fi
+    preconditions:
+      - sh: test -f "./{{.CFG}}"
+        msg: 'Error: Configuration {{.CFG}} not found'
+    deps:
+      - task: eval-host:{{.HOST}}
+      - task: check-channels-updated
+    cmds:
+      - task: print_deploy
+        vars:
+          TITLE: "nixos-rebuild {{.COMMAND}} {{.HOST}}"
+      - task: "{{.REBUILD_TASK}}"
+        vars:
+          HOST: "{{.HOST}}"
+          CFG: "{{.CFG}}"
+          COMMAND: "{{.COMMAND}}"
+      - task: touch-host:{{.COMMAND}}:{{.HOST}}
+
+
+  rebuild-cmd-local:
+    internal: true
+    cmds:
+      - |
+          if output=$(
+              set -o pipefail
+              nixos-rebuild "{{.COMMAND}}" \
+                -I "nixos-config={{.CFG}}" --show-trace |& {{.SPINPIPE}} clock
+            ); then
+            printf "\n\u2705 OK: {{.HOST}}\n"
+          else
+            rc=$?
+            printf '%s\n' "$output" >&2
+            printf "\u274C Error: {{.HOST}}\n"
+            exit $rc
+          fi
+
+
+  rebuild-cmd-remote:
+    internal: true
+    vars:
+      SSH_HOST: '{{index .HOST_ALIASES .HOST | default .HOST}}'
+    cmds:
+      - task: test_connection:{{.HOST}}
+      - |
+          if ssh -A "{{.SSH_HOST}}" "shutdown -r --no-wall +10" &>/dev/null; then
+            printf "\n\u2705 OK: rollback reboot scheduled $(date -d '+10 minutes' +%T)\n"
+          else
+            printf "\u274C Error: couldn't schedule rollback reboot\n"
+            exit 1
+          fi
+      - task: print_subtask
+        vars:
+          TITLE: "Testing new configuration"
+      - |
+          # nixos-rebuild test
+          rc=0
+          if output=$(
+              set -o pipefail
+              nixos-rebuild test --target-host "{{.SSH_HOST}}" --build-host "{{.SSH_HOST}}" \
+                -I "nixos-config={{.CFG}}" --show-trace |& {{.SPINPIPE}} clock
+            ); then
+            printf "\n\u2705 OK: nixos-rebuild test {{.HOST}}\nWaiting few secs...\n"
+          else
+            rc=$?
+            printf '%s\n' "$output" >&2
+            printf "\u274C Error: {{.HOST}}\n"
+            # exit $rc
+          fi
+          # wait
+          sleep 2s
+          # test SSH connection
+          if ! ssh -o ConnectTimeout="{{.TIMEOUT}}" -A "{{.SSH_HOST}}" exit &>/dev/null; then
+            printf "\u274C Error: no connection to {{.SSH_HOST}}. Aborting.\n"
+            exit 1
+          else
+            printf "\u2705 OK: ssh connection to {{.HOST}}\n"
+            ssh "{{.SSH_HOST}}" "shutdown -c --no-wall" &>/dev/null && printf "\u2705 OK: rollback reboot cancelled\n"
+          fi
+          # Abort if nixos-rebuild test failed earlier
+          if [ "$rc" -ne 0 ]; then
+            printf "\u274C Error: nixos-rebuild test {{.HOST}} failed. Aborting.\n"
+            exit $rc
+          fi
+          # check systemd status
+          if ! ssh -A "{{.SSH_HOST}}" "systemctl is-system-running --quiet"; then
+            printf "\u274C Error: systemd status degraded. Attempting rollback.\n"
+            # rollback
+            if output=$(
+                set -o pipefail
+                nixos-rebuild switch --rollback --target-host "{{.SSH_HOST}}" --build-host "{{.SSH_HOST}}" \
+                  -I "nixos-config={{.CFG}}" --show-trace |& {{.SPINPIPE}} clock
+              ); then
+              printf "\n\u2705 OK: nixos-rebuild switch --rollback {{.HOST}}\n"
+            else
+              rc=$?
+              printf '%s\n' "$output" >&2
+              printf "\u274C Error: nixos-rebuild switch --rollback {{.HOST}}\n"
+              exit $rc
+            fi
+          else
+            # Make new configuration default
+            printf "\u2705 OK: systemd status. Making the change permanent.\n"
+            if output=$(
+                set -o pipefail
+                nixos-rebuild "{{.COMMAND}}" --target-host "{{.SSH_HOST}}" --build-host "{{.SSH_HOST}}" \
+                  -I "nixos-config={{.CFG}}" --show-trace |& {{.SPINPIPE}} clock
+              ); then
+              printf "\n\u2705 OK: nixos-rebuild {{.COMMAND}} {{.HOST}}\n"
+            else
+              rc=$?
+              printf '%s\n' "$output" >&2
+              printf "\u274C Error: nixos-rebuild {{.COMMAND}} {{.HOST}}\n"
+              exit $rc
+            fi
+          fi
+
+
+  rebuild-verbose:*:*:
+    desc: 'nixos-rebuild COMMAND HOST (verbose)'
+    vars:
+      COMMAND: '{{index .MATCH 0}}'
+      HOST: '{{index .MATCH 1}}'
+      SSH_HOST: '{{index .HOST_ALIASES .HOST | default .HOST}}'
+      CFG: 'hosts/{{.HOST}}/configuration.nix'
+    preconditions:
+      - sh: test -f "./{{.CFG}}"
+        msg: 'Error: Configuration {{.CFG}} not found'
+    deps:
+      - task: eval-host:{{.HOST}}
+    cmds:
+      - task: print_deploy
+        vars:
+          TITLE: "nixos-rebuild {{.COMMAND}} {{.HOST}}"
+      - |
+          set -euo pipefail
+          if nixos-rebuild {{.COMMAND}} \
+              {{if ne .HOST .HOSTNAME}}--target-host "{{.SSH_HOST}}" --build-host "{{.SSH_HOST}}"{{end}} \
+              -I "nixos-config={{.CFG}}" --show-trace; then
+            printf "\n\u2705 OK: {{.HOST}}\n"
+          else
+            printf "\u274C Error: {{.HOST}}\n"
+          fi
+
+#
+#  push (to git repo)
+#
+
+  push:
+    desc: 'push configs to an upstream repo'
+    deps:
+      - task: eval
+    cmds:
+      - task: print_deploy
+        vars:
+          TITLE: "Pushing changes to upstream"
+      - |
+          if [ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then
+            printf "\u274C Error: not in 'main' branch\n"
+            exit 1
+          fi
+      - |
+          if ! git diff --quiet >/dev/null; then
+            printf "\u274C Error: unstaged changes in the repository\n"
+            git --no-pager diff --name-only
+            exit 2
+          fi
+      - |
+          if ! git diff --cached --quiet >/dev/null; then
+            printf "\u274C Error: uncommitted changes in the repository\n"
+            git --no-pager diff --cached
+            exit 3
+          fi
+      - |
+          if git push --quiet >/dev/null; then
+            printf "\u2705 OK: git push\n"
+          else
+            printf "\u274C Error: git push\n"
+          fi
+
+#
+# pull (git repo)
+#
+
+  pull:
+    desc: 'update config repo on HOST (default: "all" for all hosts)'
+    vars:
+      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+    deps:
+      - task: ensure-spinpipe
+    cmds:
+      - for:
+          var: TARGETS
+          as: HOST
+        task: pull-host:{{.HOST}}
+
+
+  pull-host:*:
+    vars:
+      HOST: '{{index .MATCH 0}}'
+      SSH_HOST: '{{index .HOST_ALIASES .HOST | default .HOST}}'
+    status:
+      - '[ "{{.HOST}}" = "{{.HOSTNAME}}" ]'
+    cmds:
+      - task: print_update
+        vars:
+          TITLE: "Pulling Git repo on {{.HOST}}"
+      - task: test_connection:{{.HOST}}
+      - |
+        if ssh -A "{{.SSH_HOST}}" "cd /etc/nixos && git pull"; then
+          printf "\u2705 OK: git pull\n"
+        else
+          printf "\u274C Error: git pull\n"
+        fi
+
+
+  push-pull:
+    desc: 'push configs upstream and pull the repo on all hosts'
+    cmds:
+      - task: push
+      - task: pull
+
+#
+# update (channels)
+#
+
+  update:
+    desc: 'update nixos channels on HOST (default: "all" for all hosts)'
+    aliases: [update-channels]
+    vars:
+      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+    deps:
+      - task: ensure-spinpipe
+    cmds:
+      - for:
+          var: TARGETS
+          as: HOST
+        task: update-channels-host:{{.HOST}}
+
+
+  check-channels-updated:
+    internal: true
+    status:
+      - test -f "{{.CHANNELS_UPDATED}}" && find "{{.CHANNELS_UPDATED}}" -type f -mtime -1 | grep -q .
+    cmds:
+      - task: update-channels-host:{{.HOSTNAME}}
+
+
+  update-channels-host:*:
+    internal: true
+    vars:
+      HOST: '{{index .MATCH 0}}'
+      SSH_HOST: '{{index .HOST_ALIASES .HOST | default .HOST}}'
+    cmds:
+      - task: print_update
+        vars:
+          TITLE: "Update nixos channels on {{.HOST}}"
+      - |
+        set -euo pipefail
+        if [ "{{.HOST}}" = "{{.HOSTNAME}}" ]; then
+          if nix-channel --update; then
+            mkdir -p .task
+            touch "{{.CHANNELS_UPDATED}}"
+            printf "\u2705 OK: nix-channel --update\n"
+          else
+            printf "\u274C Error: nix-channel --update\n"
+          fi
+        else
+          if ssh -A "{{.SSH_HOST}}" "nix-channel --update"; then
+            printf "\u2705 OK: nix-channel --update\n"
+          else
+            printf "\u274C Error: nix-channel --update\n"
+          fi
+        fi
+
+#
+# command
+#
+
+  command:
+    desc: 'run CMD=command on HOST (default: "all" for all hosts)'
+    aliases: [cmd]
+    vars:
+      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+      SHELL: '{{.SHELL | default "sh"}}'
+    requires:
+      vars: [CMD]
+    deps:
+      - task: ensure-spinpipe
+    cmds:
+      - for:
+          var: TARGETS
+          as: HOST
+        task: command-host:{{.HOST}}:{{.SHELL}}:{{.CMD}}
+
+
+  command-host:*:*:*:
+    internal: true
+    vars:
+      HOST:  '{{index .MATCH 0}}'
+      SHELL: '{{index .MATCH 1}}'
+      CMD:   '{{index .MATCH 2}}'
+      SSH_HOST: '{{index .HOST_ALIASES .HOST | default .HOST}}'
+    cmds:
+      - task: print_update
+        vars:
+          TITLE: "run command on {{.HOST}}: {{.CMD}}"
+      - |
+        set -euo pipefail
+        if [ "{{.HOST}}" = "{{.HOSTNAME}}" ]; then
+          if {{.SHELL}} -c "{{.CMD}}"; then
+            printf "\u2705 OK: {{.CMD}}\n"
+          else
+            printf "\u274C Error: {{.CMD}}\n"
+          fi
+        else
+          if ssh -A "{{.SSH_HOST}}" '{{.SHELL}} -c "{{.CMD}}"'; then
+            printf "\u2705 OK: {{.CMD}}\n"
+          else
+            printf "\u274C Error: {{.CMD}}\n"
+          fi
+        fi
+
+#
+# touch
+#
+
+
+  touch:
+    desc: "update HOST's rebuild time"
+    vars:
+      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+    deps:
+      - task: ensure-spinpipe
+    cmds:
+      - for:
+          var: TARGETS
+          as: HOST
+        task: touch-host:switch:{{.HOST}}
+
+
+  touch-host:*:*:
+    internal: true
+    vars:
+      COMMAND: '{{index .MATCH 0}}'
+      HOST: '{{index .MATCH 1}}'
+    status:
+      - test "{{.COMMAND}}" != "switch" -a  "{{.COMMAND}}" != "boot"
+    cmds:
+      - task: print_ok
+        vars:
+          TITLE: "Updating rebuild time for {{.HOST}}"
+      - |
+          set -euo pipefail
+          touch "hosts/{{.HOST}}/{{.REBUILD_TIME}}"
+
+#
+# status
+#
+
+  status:
+    desc: 'check systemd status on HOST (default: "all" for all hosts)'
+    vars:
+      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+    deps:
+      - task: ensure-spinpipe
+    cmds:
+      - for:
+          var: TARGETS
+          as: HOST
+        task: status-host:{{.HOST}}
+
+
+  status-host:*:
+    vars:
+      HOST: '{{index .MATCH 0}}'
+      SSH_HOST: '{{index .HOST_ALIASES .HOST | default .HOST}}'
+    cmds:
+      - task: print_check
+        vars:
+          TITLE: "Check status on {{.HOST}}"
+      - task: test_connection:{{.HOST}}
+      - |
+          if [ "{{.HOST}}" = "{{.HOSTNAME}}" ]; then
+            if systemctl is-system-running --quiet; then
+              printf "\u2705 OK: systemd status\n"
+            else
+              printf "\u274C Error: systemd status degraded\n"
+            fi
+          else
+            if ! ssh "{{.SSH_HOST}}" exit &>/dev/null; then
+              printf "\u274C Error: no connection to {{.HOST}}\n"
+            else
+              if ssh -A "{{.SSH_HOST}}" "systemctl is-system-running --quiet"; then
+                printf "\u2705 OK: systemd status\n"
+              else
+                printf "\u274C Error: systemd status degraded\n"
+              fi
+            fi
+          fi
+      - |
+          output=$(find modules pkgs users profiles programs -type f -name '*.nix' -newer "hosts/{{.HOST}}/{{.REBUILD_TIME}}";
+                    find "hosts/{{.HOST}}" -type f -name '*.nix' -newer "hosts/{{.HOST}}/{{.REBUILD_TIME}}";)
+          rc=$?
+          if [ "$rc" != "0" ]; then
+            printf '%s\n' "$output" >&2
+            printf "\u274C Error: {{.HOST}}\n"
+            exit $rc
+          fi
+          if [ -n "$output" ]; then
+            printf '%s\n' "Files updated after rebuilding the host:"
+            printf '%s\n' "$output" >&2
+            printf "\u274C Error: configuration is out-of-date\n"
+          else
+            printf "\u2705 OK: configuration is up-to-date\n"
+          fi
+
+#
+# test_connection
+#
+
+  test_connection:*:
+    internal: true
+    vars:
+      HOST: '{{index .MATCH 0}}'
+      SSH_HOST: '{{index .HOST_ALIASES .HOST | default .HOST}}'
+    cmds:
+      - |
+          if [ "{{.HOST}}" != "{{.HOSTNAME}}" ] && ! ssh -o ConnectTimeout="{{.TIMEOUT}}" "{{.SSH_HOST}}" exit &>/dev/null; then
+            printf "\u274C Error: no connection to {{.HOST}}\n"
+            exit 1
+          fi
+
+#
+# Print task helpers
+#
+
+  print_deploy:
+    internal: true
+    cmds:
+      - task: _print_div
+        vars:
+          TITLE: "\U0001F680 {{.TITLE}}"  # Rocket
+
+  print_check:
+    internal: true
+    cmds:
+      - task: _print_div
+        vars:
+          TITLE: "\U0001F50D {{.TITLE}}"  # Magnifying glass
+
+  print_update:
+    internal: true
+    cmds:
+      - task: _print_div
+        vars:
+          TITLE: "\U0001F501 {{.TITLE}}"  # blue circular arrows
+
+
+  print_subtask:
+    internal: true
+    cmds:
+      - task: _print_div
+        vars:
+          TITLE: "\U0001F539 {{.TITLE}}"  # blue diamond
+
+  print_ok:
+    internal: true
+    cmds:
+      - task: _print_div
+        vars:
+          TITLE: "\u2705 {{.TITLE}}"  # green checkmark
+
+  print_error:
+    internal: true
+    cmds:
+      - task: _print_div
+        vars:
+          TITLE: "\u274C {{.TITLE}}"  # red error
+
+  _print_div:
+    internal: true
+    cmd: |
+      title="{{.TITLE}}"
+      # how many characters left for the line
+      count=$((60 - ${#title}))
+      [ "$count" -lt 0 ] && count=0
+      # build a string of "count" spaces, then turn spaces into "─"
+      line=''
+      i=0
+      while [ "$i" -lt "$count" ]; do
+        line="${line}─"
+        i=$((i+1))
+      done
+      printf '\n%s %s\n' "$title" "$line"
