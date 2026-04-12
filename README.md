@@ -49,9 +49,13 @@ eval "$(ssh-agent)"
 ssh-add ~/.ssh/id_ed25519
 ```
 
-### 3) Configure hosts into `hosts.yml`
+### 3) Copy `Taskfile.yml`
 
-You must define the hosts you want to manage in `hosts.yml`.
+Copy [`Taskfile.yml`](Taskfile.yml) into `/etc/nixos`. You may want to clone the repo locally and copy the `Taskfile.yml` from there to keep track of updates.  
+
+### 4) Configure hosts into `hosts.yml`
+
+You must define the hosts you want to manage in `/etc/nixos/hosts.yml`.
 
 Example:
 
@@ -76,7 +80,7 @@ vars:
     host3: 10.0.0.100
 ```
 
-## 4) Set up repository structure
+## 5) Set up repository structure
 
 
 ```text
