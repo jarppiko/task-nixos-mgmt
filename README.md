@@ -17,7 +17,7 @@ Operations are done in serial manner so the fleet size is limited by your patien
 * Built-in safety mechanisms for remote deployments (test, rollback or switch)
 * Git-based workflow support
 * SSH-based execution (`ssh-agent` strongly recommended)
-* Minimal dependencies and easy to understand logic
+* Minimal dependencies and easy to understand logic in a single text file
 
 
 ## ⚙️ Requirements
