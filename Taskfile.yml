@@ -37,6 +37,13 @@ tasks:
           #!/usr/bin/env bash
           set -euo pipefail
 
+          # get console width
+          get_cols() {
+            local rows cols
+            read -r rows cols < <(stty size < /dev/tty 2>/dev/null || echo "24 80")
+            echo "$cols"
+          }
+
           style="${1:-clock}"
 
           # Disable spinner completely if SPINNER=0
@@ -64,10 +71,20 @@ tasks:
           i=0
 
           # Ensure spinner line is cleared on exit / Ctrl-C
-          trap 'printf "\r" >&2' EXIT INT TERM
+
+          trap 'printf "\r\033[K" >&2' EXIT INT TERM
 
           while IFS= read -r line; do
-            printf "\r%s %s" "${frames[i % ${#frames[@]}]}" "$line" >&2
+            cols=$(get_cols)
+            maxlen=$((cols - 4))
+
+            frame="${frames[i % ${#frames[@]}]}"
+            display="${line:0:$maxlen}"
+
+            printf "\r%s %-*.*s\033[K" \
+              "$frame" \
+              "$maxlen" "$maxlen" "$display" >&2
+
             i=$((i + 1))
             printf "%s\n" "$line"
           done
@@ -263,8 +280,8 @@ tasks:
     cmds:
       - task: test_connection:{{.HOST}}
       - |
-          if ssh -A "{{.SSH_HOST}}" "shutdown -r --no-wall +10" &>/dev/null; then
-            printf "\n\u2705 OK: rollback reboot scheduled $(date -d '+10 minutes' +%T)\n"
+          if ssh -A "{{.SSH_HOST}}" "shutdown -r --no-wall +15" &>/dev/null; then
+            printf "\n\u2705 OK: rollback reboot scheduled $(date -d '+15 minutes' +%T)\n"
           else
             printf "\u274C Error: couldn't schedule rollback reboot\n"
             exit 1
@@ -320,7 +337,12 @@ tasks:
             fi
           else
             # Make new configuration default
-            printf "\u2705 OK: systemd status. Making the change permanent.\n"
+            printf "\u2705 OK: systemd status.\n"
+          fi
+      - task: print_subtask
+        vars:
+          TITLE: "Making the new configuration permanent"
+      - |
             if output=$(
                 set -o pipefail
                 nixos-rebuild "{{.COMMAND}}" --target-host "{{.SSH_HOST}}" --build-host "{{.SSH_HOST}}" \
@@ -333,7 +355,6 @@ tasks:
               printf "\u274C Error: nixos-rebuild {{.COMMAND}} {{.HOST}}\n"
               exit $rc
             fi
-          fi
 
 
   rebuild-verbose:*:*:
