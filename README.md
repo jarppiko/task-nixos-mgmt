@@ -25,11 +25,11 @@ Operations are done in serial manner so the fleet size is limited by your patien
 ### Dependencies
 
 - [Taskfile](https://taskfile.dev)
-- [Git]([url](https://git-scm.com/))
+- [Git](https://git-scm.com/)
 
 - [Bash](https://www.gnu.org/software/bash/)
 - [Coreutils](https://www.gnu.org/software/coreutils/)
-- [OpenSSH]([url](https://www.openssh.com/))
+- [OpenSSH](https://www.openssh.com/)
 
 ### 1) Install Taskfile
 
