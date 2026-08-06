@@ -17,7 +17,7 @@ Operations are done in serial manner so the fleet size is limited by your patien
 * Built-in safety mechanisms for remote deployments (test, rollback or switch)
 * Git-based workflow support
 * SSH-based execution (`ssh-agent` strongly recommended)
-* Minimal dependencies and easy to understand logic in a single text file
+* Minimal dependencies and easy to understand logic in a single text file (`go-task`, `git`, `bash`, `coreutils`, `openssh`)
 
 
 ## ⚙️ Requirements
@@ -26,7 +26,6 @@ Operations are done in serial manner so the fleet size is limited by your patien
 
 - [Taskfile](https://taskfile.dev)
 - [Git](https://git-scm.com/)
-
 - [Bash](https://www.gnu.org/software/bash/)
 - [Coreutils](https://www.gnu.org/software/coreutils/)
 - [OpenSSH](https://www.openssh.com/)
