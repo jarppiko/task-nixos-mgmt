@@ -15,6 +15,7 @@ vars:
   CHANNELS_UPDATED: ".task/channels-updated"
   SPINPIPE: ".task/spinpipe.sh"
   TIMEOUT: 5
+  ROLLBACK_REBOOT: 30
 
 includes:
   cfg: ./hosts.yml
@@ -280,8 +281,8 @@ tasks:
     cmds:
       - task: test_connection:{{.HOST}}
       - |
-          if ssh -A "{{.SSH_HOST}}" "shutdown -r --no-wall +15" &>/dev/null; then
-            printf "\n\u2705 OK: rollback reboot scheduled $(date -d '+15 minutes' +%T)\n"
+          if ssh -A "{{.SSH_HOST}}" "shutdown -r --no-wall +{{.ROLLBACK_REBOOT}}" &>/dev/null; then
+            printf "\n\u2705 OK: rollback reboot scheduled $(date -d '+{{.ROLLBACK_REBOOT}} minutes' +%T)\n"
           else
             printf "\u274C Error: couldn't schedule rollback reboot\n"
             exit 1
