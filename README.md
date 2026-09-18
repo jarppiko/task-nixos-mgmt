@@ -2,7 +2,7 @@
 
 A simple [Taskfile](https://taskfile.dev)-based tool for managing small fleets of NixOS hosts. Build, test, deploy, and operate NixOS configurations across multiple machines. Uses [`go-task`](https://taskfile.dev), SSH and `nixos-rebuild` under the hood.
 
-Operations are done in serial manner so the fleet size is limited by your patience. 
+Operations are done in serial manner by default. Parallel processing is supported if [GNU parallel](https://www.gnu.org/software/parallel/index.html) is found from `PATH`. The fleet size is limited by your patience. 
 
 ![Demo](pics/demo.gif)
 
@@ -20,6 +20,8 @@ Operations are done in serial manner so the fleet size is limited by your patien
 * Minimal dependencies and easy to understand logic in a single text file (`go-task`, `git`, `bash`, `coreutils`, `openssh`)
 
 
+
+
 ## ⚙️ Requirements
 
 ### Dependencies
@@ -30,13 +32,22 @@ Operations are done in serial manner so the fleet size is limited by your patien
 - [Coreutils](https://www.gnu.org/software/coreutils/)
 - [OpenSSH](https://www.openssh.com/)
 
-### 1) Install Taskfile
+#### Optional
 
-Add `go-task` to your `environment.systemPackages` to install [Taskfile](https://taskfile.dev).
+- [GNU parallel](https://www.gnu.org/software/parallel/index.html)  *(for parallel processsing)*
+
+
+
+### 1) Install Taskfile and dependencies
+
+Add `go-task` and other dependencies to your `environment.systemPackages` to install [Taskfile](https://taskfile.dev).
 
 ```nix
   environment.systemPackages = with pkgs; [
     go-task
+    git
+    opensssh
+    parallel    # optional, for parallel processing support
   ];
 ```
 
@@ -59,7 +70,7 @@ ssh-add ~/.ssh/id_ed25519
 
 ### 3) Copy `Taskfile.yml`
 
-Copy [`Taskfile.yml`](Taskfile.yml) into `/etc/nixos`. You may want to clone the repo locally and copy the `Taskfile.yml` from there to keep track of updates.  
+Copy [`Taskfile.yml`](Taskfile.yml) into `/etc/nixos`. You may want to clone the repo locally and copy the `Taskfile.yml` from there to keep track of updates.
 
 ### 4) Configure hosts into `hosts.yml`
 
@@ -111,9 +122,9 @@ Example:
 
 ```text
 hosts/
-├── host1/
+├── my-server1/
 │   └── configuration.nix
-├── host2/
+├── cool-desktop/
 │   └── configuration.nix
 ```
 

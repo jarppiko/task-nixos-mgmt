@@ -11,6 +11,8 @@ vars:
       placeholder_alias_ignore: "1.1.1.1.1"
   HOSTNAME:
     sh: hostname
+  HAS_PARALLEL:
+    sh: command -v parallel &>/dev/null && echo "true" || echo "false"
   REBUILD_TIME: ".rebuild_time"
   CHANNELS_UPDATED: ".task/channels-updated"
   SPINPIPE: ".task/spinpipe.sh"
@@ -112,6 +114,22 @@ tasks:
           var: TARGETS
           as: HOST
         task: eval-host:{{.HOST}}
+
+
+  parallel-tasks:*:*:
+    desc: "helper to parallize tasks"
+    internal: true
+    vars:
+      CLI_TASK: '{{index .MATCH 0}}'
+      TASK:  '{{index .MATCH 1}}'
+    cmds:
+      - cmd: 'parallel task {{.CLI_TASK}} -- ::: {{.TARGETS | join " "}}'
+        if: '{{eq .HAS_PARALLEL "true"}}'
+      - for:
+          var: TARGETS
+          as: HOST
+        task: '{{.TASK}}:{{.HOST}}'
+        if: '{{eq .HAS_PARALLEL "false"}}'
 
 
   eval-host:*:
@@ -217,12 +235,29 @@ tasks:
     deps:
       - task: ensure-spinpipe
     vars:
-      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+      TARGETS:
+        ref: 'ternary .CLI_ARGS_LIST .HOSTS (ne .CLI_ARGS "")'
+      N_TARGETS:
+        ref: 'len .TARGETS'
     cmds:
-      - for:
-          var: TARGETS
-          as: HOST
-        task: rebuild-cmd-host:switch:{{.HOST}}
+      - task: rebuild-cmd-host:switch:{{index .TARGETS 0}}
+        if: '{{eq .N_TARGETS 1}}'
+      - task: print_deploy
+        vars:
+          TITLE: 'nixos-rebuild switch {{.TARGETS | join ", "}}'
+        if: '{{gt .N_TARGETS 1}}'
+      - task: parallel-tasks:switch:rebuild-switch-host
+        if: '{{gt .N_TARGETS 1}}'
+        vars:
+          TARGETS:
+            ref: .TARGETS
+
+
+  rebuild-switch-host:*:
+    internal: true
+    vars:
+      HOST: '{{index .MATCH 0}}'
+    task: rebuild-cmd-host:switch:{{.HOST}}
 
 
   rebuild-cmd-host:*:*:
@@ -426,15 +461,25 @@ tasks:
 
   pull:
     desc: 'update config repo on HOST (default: "all" for all hosts)'
-    vars:
-      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
     deps:
       - task: ensure-spinpipe
+    vars:
+      TARGETS:
+        ref: 'ternary .CLI_ARGS_LIST .HOSTS (ne .CLI_ARGS "")'
+      N_TARGETS:
+        ref: 'len .TARGETS'
     cmds:
-      - for:
-          var: TARGETS
-          as: HOST
-        task: pull-host:{{.HOST}}
+      - task: pull-host:{{index .TARGETS 0}}
+        if: '{{eq .N_TARGETS 1}}'
+      - task: print_update
+        vars:
+          TITLE: 'Pulling Git repo on {{ without .TARGETS .HOSTNAME | join ", "}}'
+        if: '{{gt .N_TARGETS 1}}'
+      - task: parallel-tasks:pull:pull-host
+        if: '{{gt .N_TARGETS 1}}'
+        vars:
+          TARGETS:
+            ref: .TARGETS
 
 
   pull-host:*:
@@ -470,14 +515,32 @@ tasks:
     desc: 'update nixos channels on HOST (default: "all" for all hosts)'
     aliases: [update-channels]
     vars:
-      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+      TARGETS:
+        ref: 'ternary .CLI_ARGS_LIST .HOSTS (ne .CLI_ARGS "")'
+      N_TARGETS:
+        ref: 'len .TARGETS'
     deps:
       - task: ensure-spinpipe
     cmds:
-      - for:
-          var: TARGETS
-          as: HOST
-        task: update-channels-host:{{.HOST}}
+      - task: update-channels-host:{{index .TARGETS 0}}
+        if: '{{eq .N_TARGETS 1}}'
+      - task: parallel-tasks:update:update-channels-host
+        if: '{{gt .N_TARGETS 1}}'
+        vars:
+          TARGETS:
+            ref: .TARGETS
+
+
+#  update-channels-hosts:
+#    internal: true
+#    cmds:
+#      - cmd: 'parallel task update -- ::: {{.TARGETS | join " "}}'
+#        if: '{{eq .HAS_PARALLEL "true"}}'
+#      - for:
+#          var: TARGETS
+#          as: HOST
+#        task: update-channels-host:{{.HOST}}
+#        if: '{{eq .HAS_PARALLEL "false"}}'
 
 
   check-channels-updated:
@@ -533,6 +596,8 @@ tasks:
       - for:
           var: TARGETS
           as: HOST
+        vars:
+          TITLE: "run command on {{.HOST}}: {{.CMD}}"
         task: command-host:{{.HOST}}:{{.SHELL}}:{{.CMD}}
 
 
@@ -542,11 +607,13 @@ tasks:
       HOST:  '{{index .MATCH 0}}'
       SHELL: '{{index .MATCH 1}}'
       CMD:   '{{index .MATCH 2}}'
+      # TITLE:  '{{index .MATCH 3}}'
       SSH_HOST: '{{index .HOST_ALIASES .HOST | default .HOST}}'
     cmds:
       - task: print_update
         vars:
-          TITLE: "run command on {{.HOST}}: {{.CMD}}"
+          TITLE: "{{.TITLE}}"
+        #  TITLE: "run command on {{.HOST}}: {{.CMD}}"
       - |
         set -euo pipefail
         if [ "{{.HOST}}" = "{{.HOSTNAME}}" ]; then
@@ -562,6 +629,29 @@ tasks:
             printf "\u274C Error: {{.CMD}}\n"
           fi
         fi
+
+#
+# list generations
+#
+
+
+  generations:
+    desc: "list NixOS generations"
+    aliases: [ gen ]
+    vars:
+      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+      SHELL: '{{.SHELL | default "sh"}}'
+      CMD: "nixos-rebuild list-generations"
+    deps:
+      - task: ensure-spinpipe
+    cmds:
+      - for:
+          var: TARGETS
+          as: HOST
+        vars:
+          TITLE: "listing NiXOS generations for {{.HOST}}"
+        task: command-host:{{.HOST}}:{{.SHELL}}:{{.CMD}}
+
 
 #
 # touch
@@ -596,6 +686,7 @@ tasks:
           set -euo pipefail
           touch "hosts/{{.HOST}}/{{.REBUILD_TIME}}"
 
+
 #
 # status
 #
@@ -603,14 +694,24 @@ tasks:
   status:
     desc: 'check systemd status on HOST (default: "all" for all hosts)'
     vars:
-      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+      TARGETS:
+        ref: 'ternary .CLI_ARGS_LIST .HOSTS (ne .CLI_ARGS "")'
+      N_TARGETS:
+        ref: 'len .TARGETS'
     deps:
       - task: ensure-spinpipe
     cmds:
-      - for:
-          var: TARGETS
-          as: HOST
-        task: status-host:{{.HOST}}
+      - task: status-host:{{index .TARGETS 0}}
+        if: '{{eq .N_TARGETS 1}}'
+      - task: print_check
+        vars:
+          TITLE: 'Checking status on {{.TARGETS | join ", "}}'
+        if: '{{gt .N_TARGETS 1}}'
+      - task: parallel-tasks:status:status-host
+        if: '{{gt .N_TARGETS 1}}'
+        vars:
+          TARGETS:
+            ref: .TARGETS
 
 
   status-host:*:
@@ -620,7 +721,7 @@ tasks:
     cmds:
       - task: print_check
         vars:
-          TITLE: "Check status on {{.HOST}}"
+          TITLE: "Checking status on {{.HOST}}"
       - task: test_connection:{{.HOST}}
       - |
           if [ "{{.HOST}}" = "{{.HOSTNAME}}" ]; then
@@ -629,6 +730,27 @@ tasks:
             else
               printf "\u274C Error: systemd status degraded\n"
             fi
+              # uname
+              if output=$(
+                set -o pipefail
+                uname -srm
+              ); then
+                printf "\u2705 OK: $output\n"
+              else
+                rc=$?
+                printf "\u274C Error: uname {{.HOST}}\n"
+              fi
+              # uptime
+              if output=$(
+                set -o pipefail
+                uptime
+              ); then
+                printf "\u2705 OK:$output\n"
+              else
+                rc=$?
+                printf "\u274C Error: uptime {{.HOST}}\n"
+              fi
+
           else
             if ! ssh "{{.SSH_HOST}}" exit &>/dev/null; then
               printf "\u274C Error: no connection to {{.HOST}}\n"
@@ -637,6 +759,26 @@ tasks:
                 printf "\u2705 OK: systemd status\n"
               else
                 printf "\u274C Error: systemd status degraded\n"
+              fi
+              # uname
+              if output=$(
+                set -o pipefail
+                ssh -A "{{.SSH_HOST}}" '{{.SHELL}} -c "uname -srm"'
+              ); then
+                printf "\u2705 OK: $output\n"
+              else
+                rc=$?
+                printf "\u274C Error: uname {{.HOST}}\n"
+              fi
+              # uptime
+              if output=$(
+                set -o pipefail
+                ssh -A "{{.SSH_HOST}}" '{{.SHELL}} -c "uptime"'
+              ); then
+                printf "\u2705 OK:$output\n"
+              else
+                rc=$?
+                printf "\u274C Error: uptime {{.HOST}}\n"
               fi
             fi
           fi
@@ -656,6 +798,16 @@ tasks:
           else
             printf "\u2705 OK: configuration is up-to-date\n"
           fi
+
+
+#
+# list
+
+  list:
+    description: 'list available commands'
+    aliases: [ default ]
+    cmd: task --list
+
 
 #
 # test_connection
