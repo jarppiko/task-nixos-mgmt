@@ -122,6 +122,9 @@ tasks:
     vars:
       CLI_TASK: '{{index .MATCH 0}}'
       TASK:  '{{index .MATCH 1}}'
+    preconditions:
+      - sh: ssh-add -lq 2> /dev/null
+        msg: "Error: SSH key not loaded. Please run 'ssh-add'"
     cmds:
       - cmd: 'parallel task {{.CLI_TASK}} -- ::: {{.TARGETS | join " "}}'
         if: '{{eq .HAS_PARALLEL "true"}}'
@@ -524,6 +527,10 @@ tasks:
     cmds:
       - task: update-channels-host:{{index .TARGETS 0}}
         if: '{{eq .N_TARGETS 1}}'
+      - task: print_deploy
+        vars:
+          TITLE: 'update nixos channels on {{.TARGETS | join ", "}}'
+        if: '{{gt .N_TARGETS 1}}'
       - task: parallel-tasks:update:update-channels-host
         if: '{{gt .N_TARGETS 1}}'
         vars:
@@ -688,8 +695,61 @@ tasks:
 
 
 #
+# configuration version
+#
+
+
+  config:
+    desc: "check HOST's config version"
+    vars:
+      TARGETS: '{{if .CLI_ARGS_LIST}}{{.CLI_ARGS_LIST | join " "}}{{else}}{{.HOSTS | join " "}}{{end}}'
+      LATEST:
+        sh: git ls-remote origin refs/heads/main | cut -f1
+    deps:
+      - task: ensure-spinpipe
+    cmds:
+      - task: print_check
+        vars:
+          TITLE: "Latest version is {{.LATEST}}"
+      - for:
+          var: TARGETS
+          as: HOST
+        task: config-host:{{.HOST}}
+        vars:
+          LATEST: "{{.LATEST}}"
+
+
+  config-host:*:
+    vars:
+      HOST: '{{index .MATCH 0}}'
+      SSH_HOST: '{{index .HOST_ALIASES .HOST | default .HOST}}'
+    status:
+      - '[ "{{.HOST}}" = "{{.HOSTNAME}}" ]'
+      - '[ "{{.LATEST}}" ]'
+    cmds:
+      - task: print_update
+        vars:
+          TITLE: "Checking config repo version on {{.HOST}}"
+      - task: test_connection:{{.HOST}}
+      - |
+        if VERSION=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -A "{{.SSH_HOST}}" \
+          "git -c safe.directory=/etc/nixos -C /etc/nixos rev-parse HEAD 2>/dev/null"); then
+          if [ "$VERSION" == "{{.LATEST}}" ]; then
+            printf "\u2705 OK: {{.HOST}} has latest config: $VERSION\n"
+          else
+            printf "\u274C Error: {{.HOST}} config is out-of-date: $VERSION\n"
+          fi
+        else
+          printf "\u274C Error: {{.HOST}}: could not read repo version"
+          exit 1
+        fi
+
+
+#
 # status
 #
+
+
 
   status:
     desc: 'check systemd status on HOST (default: "all" for all hosts)'
@@ -713,11 +773,12 @@ tasks:
           TARGETS:
             ref: .TARGETS
 
-
   status-host:*:
     vars:
       HOST: '{{index .MATCH 0}}'
       SSH_HOST: '{{index .HOST_ALIASES .HOST | default .HOST}}'
+      LATEST:
+        sh: git ls-remote origin refs/heads/main | cut -f1
     cmds:
       - task: print_check
         vars:
@@ -750,6 +811,16 @@ tasks:
                 rc=$?
                 printf "\u274C Error: uptime {{.HOST}}\n"
               fi
+              # repo version
+              if VERSION=$(git -c safe.directory=/etc/nixos -C /etc/nixos rev-parse HEAD 2>/dev/null); then
+                if [ "$VERSION" == "{{.LATEST}}" ]; then
+                  printf "\u2705 OK: repo has latest version $VERSION\n"
+                else
+                  printf "\u274C Error: repo is out-of-date: $VERSION\n"
+                fi
+              else
+                printf "\u274C Error: could not read repo version"
+              fi
 
           else
             if ! ssh "{{.SSH_HOST}}" exit &>/dev/null; then
@@ -780,6 +851,17 @@ tasks:
                 rc=$?
                 printf "\u274C Error: uptime {{.HOST}}\n"
               fi
+              # repo version
+              if VERSION=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -A "{{.SSH_HOST}}" \
+                "git -c safe.directory=/etc/nixos -C /etc/nixos rev-parse HEAD 2>/dev/null"); then
+                if [ "$VERSION" == "{{.LATEST}}" ]; then
+                  printf "\u2705 OK: repo has latest version: $VERSION\n"
+                else
+                  printf "\u274C Error: repo is out-of-date: $VERSION\n"
+                fi
+              else
+                printf "\u274C Error: could not read repo version"
+              fi
             fi
           fi
       - |
@@ -794,9 +876,9 @@ tasks:
           if [ -n "$output" ]; then
             printf '%s\n' "Files updated after rebuilding the host:"
             printf '%s\n' "$output" >&2
-            printf "\u274C Error: configuration is out-of-date\n"
+            printf "\u274C Error: host configuration is out-of-date\n"
           else
-            printf "\u2705 OK: configuration is up-to-date\n"
+            printf "\u2705 OK: host configuration is up-to-date\n"
           fi
 
 
